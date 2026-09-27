@@ -15,7 +15,7 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  * The full licence text is also available at
- * <https://www.gnu.org/licenses/gpl-3.0.html> and in the COPYING file
+ * <https://www.gnu.org/licenses/gpl-3.0.html> and in the LICENSE file
  * distributed with this program.
  *
  * ---------------------------------------------------------------------
