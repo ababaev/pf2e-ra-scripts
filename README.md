@@ -6,17 +6,17 @@ Verified for foundry v14.363-368
 ## ra_smuggler
 
 Simply sells items without a requirement to create a trader. Treasures are sold for the full price, other items for the half.
-Allows to do it in batches.
+Allows to do it in batches. Drag-and-drop to the screen.
 
 ## ra_item_mystification
 
-A script with an interface to mystify items when a player had failed identification critically. Just drop the item to the script's opened window, and it will suggest similar items (potions, elixirs, oils and etc) of similar price to mystify. It will replace all the descriptions and etc in the mystification tab properly.
+A script with an interface to mystify items when a player had failed identification critically. Just drag-and-drop the item to the script's opened window, and it will suggest similar items (potions, elixirs, oils and etc) of similar price to mystify. It will replace all the descriptions and etc in the mystification tab properly.
 Can be done on the fly during the game.
 
 ## ra_incantation
 
 Was inspired by a player, Daniil, who used to rephrase each spell in latin language, so that his character had actually pronounced a spell (if it was not subtle) while casting it.
-In the opened window you can throw a spell of your NPC, and it will suggest a phrase in english (usually a name and a casting tradition).
+In the opened window you can drag-and-drop a spell of your NPC, and it will suggest a phrase in english (usually a name and a casting tradition).
 The phrase in English can be modified, so that your spells can become unique.
 Then it will translate it using API of a free translator, and then apply it to the description of the spell.
 So when your NPC is casting a spell, you can actually describe, how is it happening.
