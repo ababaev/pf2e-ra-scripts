@@ -27,7 +27,8 @@
  *   came from — so items dragged out of the stash pay into the stash.
  *
  *   Remove a row by double-clicking it or with the ✕ on the right. The
- *   window stays open until you close it.
+ *   window stays open until you close it. Rows that fail to sell stay in
+ *   the list; everything that was removed is always paid for.
  *
  * MYSTIFIED ITEMS
  *   Mystification changes an item's apparent name, image and description,
@@ -35,7 +36,8 @@
  *   effect on what is paid. The sell list shows the item exactly as it
  *   presents itself, with no hint that anything is disguised; only the GM
  *   whisper records both names, so the log shows what was handed over as
- *   well as what it actually was.
+ *   well as what it actually was. When a player runs the macro the true
+ *   name is left out of the whisper, since its author can read it too.
  *
  * PRICING
  *   Items sell at RATE (half by default) of their listed price. Batch
@@ -43,7 +45,13 @@
  *   unit price is the listed price divided by the batch size. Fractions of
  *   a copper are rounded down per row.
  *
- *   Coins cannot be sold, and items with no listed price are rejected.
+ *   Treasure (gems, art objects, trade goods) sells at TREASURE_RATE —
+ *   full price by default, as the rules allow. Rows priced at something
+ *   other than RATE show their rate under the name.
+ *
+ *   Coins cannot be sold, and items with no listed price are rejected, as
+ *   are temporary and infused items (made for free, so selling them would
+ *   create money) and containers that still hold something.
  *
  * REQUIREMENTS
  *   Foundry VTT v13 or later (uses DialogV2).
@@ -54,6 +62,7 @@
 (async () => {
   // ============ SETTINGS ============
   const RATE = 0.5;           // fraction of list price paid out
+  const TREASURE_RATE = 1;    // gems, art objects, trade goods: full price
   const USE_PLATINUM = false; // true  - pay out in pp/gp/sp/cp
                               // false - gp/sp/cp only
   // ==================================
@@ -96,6 +105,18 @@
   const isCoins = (item) => item?.type === "treasure"
     && item?.system?.stackGroup === "coins";
 
+  const rateOf = (item) => item?.type === "treasure" ? TREASURE_RATE : RATE;
+
+  // Items that should not be sold at all: temporary or infused items made
+  // for free (quick alchemy, daily preparations) would be free money.
+  const isTemporary = (item) => !!item?.system?.temporary
+    || (item?.system?.traits?.value ?? []).includes("infused");
+
+  // Contents are not counted in a container's price, and deleting the
+  // container would take them along, so only empty containers are sold.
+  const hasContents = (item) =>
+    !!item?.actor?.items?.some((i) => i.system?.containerId === item.id);
+
   // The name the item currently presents itself under, or null when it is
   // not mystified. Used for the log only — it does not affect the price.
   const fakeNameOf = (item) => {
@@ -114,9 +135,16 @@
 
   // --- state ---
   const cart = new Map();
-  // uuid -> { uuid, name, fakeName, img, unit, max, qty, actorName }
+  // uuid -> { uuid, name, fakeName, img, unit, rate, max, qty, actorName }
 
-  const rowValue = (r) => Math.floor(r.unit * r.qty * RATE);
+  const rowValue = (r) => Math.floor(r.unit * r.qty * r.rate);
+
+  // What the user running the macro may see: never the true name of a
+  // disguised item unless they are the GM.
+  const visibleName = (r) => r.fakeName ?? r.name;
+  const logName = (r) => r.fakeName && game.user.isGM
+    ? `${r.fakeName} — really ${r.name}`
+    : visibleName(r);
 
   // --- rendering ---
   const renderCart = () => {
@@ -130,8 +158,9 @@
           <img src="${esc(r.img)}" width="28" height="28" style="border:none;">
         </td>
         <td style="vertical-align:top;padding:.25rem 0;">
-          ${esc(r.fakeName ?? r.name)}
-          <div style="opacity:.55;font-size:.8em;">${esc(r.actorName)}</div>
+          ${esc(visibleName(r))}
+          <div style="opacity:.55;font-size:.8em;">${esc(r.actorName)}${
+            r.rate !== RATE ? ` · ${r.rate * 100}% of list` : ""}</div>
         </td>
         <td style="width:70px;text-align:center;vertical-align:top;padding:.25rem 0;">
           <input type="number" class="qt-qty" min="1" max="${r.max}"
@@ -218,6 +247,13 @@
     if (isCoins(item))
       return ui.notifications.warn("Coins cannot be sold");
 
+    if (isTemporary(item))
+      return ui.notifications.warn(
+        `"${item.name}" is temporary or infused and cannot be sold`);
+
+    if (hasContents(item))
+      return ui.notifications.warn(`Empty "${item.name}" before selling it`);
+
     if (cart.has(item.uuid))
       return ui.notifications.info(`"${item.name}" is already in the list`);
 
@@ -231,6 +267,7 @@
       fakeName: fakeNameOf(item),
       img: item.img,
       unit,
+      rate: rateOf(item),
       max: Math.max(1, item.system?.quantity ?? 1),
       qty: Math.max(1, item.system?.quantity ?? 1),
       actorName: item.actor.name
@@ -248,6 +285,14 @@
     const q = Number(input.value);
     row.qty = Math.min(row.max, Math.max(1, Number.isFinite(q) ? Math.floor(q) : 1));
     refresh();
+  });
+
+  // Enter in a number field would submit the dialog form, which closes
+  // the window and loses the list. Commit the value instead.
+  list.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Enter" || !ev.target.closest(".qt-qty")) return;
+    ev.preventDefault();
+    ev.target.blur();
   });
 
   list.addEventListener("click", (ev) => {
@@ -279,33 +324,46 @@
     busy = true;
     sellBtn.disabled = true;
 
-    try {
-      const payouts = new Map(); // actor -> copper
-      const lines   = [];
+    const payouts = new Map(); // actor -> copper
+    const lines   = [];
+    const sold    = [];
+    let failed    = 0;
 
-      for (const row of cart.values()) {
+    // Each row is handled on its own, so one bad item does not stop the
+    // rest, and whatever was removed is always paid for below.
+    for (const row of cart.values()) {
+      try {
         const item = await fromUuid(row.uuid);
         if (!item?.actor) {
-          ui.notifications.warn(`"${row.name}" is no longer available — skipped`);
+          ui.notifications.warn(`"${visibleName(row)}" is no longer available — skipped`);
+          sold.push(row.uuid);
+          continue;
+        }
+        if (hasContents(item)) {
+          ui.notifications.warn(`"${visibleName(row)}" is not empty — skipped`);
           continue;
         }
 
-        const qty = Math.min(row.qty, item.system?.quantity ?? row.qty);
-        if (qty < 1) continue;
+        const have = item.system?.quantity ?? 1;
+        const qty  = Math.min(row.qty, have);
+        if (qty < 1) { sold.push(row.uuid); continue; }
 
-        const value = Math.floor(row.unit * qty * RATE);
+        const value = Math.floor(row.unit * qty * row.rate);
         const actor = item.actor;
-        const shown = row.fakeName
-          ? `${row.fakeName} — really ${row.name}`
-          : row.name;
 
-        if (qty >= (item.system?.quantity ?? 1)) await item.delete();
-        else await item.update({ "system.quantity": item.system.quantity - qty });
+        if (qty >= have) await item.delete();
+        else await item.update({ "system.quantity": have - qty });
 
         payouts.set(actor, (payouts.get(actor) ?? 0) + value);
-        lines.push(`${qty} × ${shown} — ${fmt(value)}`);
+        lines.push(`${qty} × ${logName(row)} — ${fmt(value)}`);
+        sold.push(row.uuid);
+      } catch (e) {
+        console.error("PF2e RA Smuggler", e);
+        failed++;
       }
+    }
 
+    try {
       for (const [actor, cp] of payouts) {
         if (typeof actor.inventory?.addCoins !== "function") {
           ui.notifications.error(
@@ -330,13 +388,14 @@
         ui.notifications.info(
           `Sold ${lines.length} entr${lines.length === 1 ? "y" : "ies"}`);
       }
-
-      cart.clear();
-      refresh();
     } catch (e) {
       console.error("PF2e RA Smuggler", e);
-      ui.notifications.error("Something went wrong — see the console");
+      ui.notifications.error("Items were sold but paying out failed — see the console");
     } finally {
+      if (failed) ui.notifications.error(
+        `${failed} entr${failed === 1 ? "y" : "ies"} could not be sold — see the console`);
+      for (const uuid of sold) cart.delete(uuid);
+      refresh();
       busy = false;
       sellBtn.disabled = false;
     }
