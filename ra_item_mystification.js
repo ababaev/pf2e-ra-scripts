@@ -1,5 +1,5 @@
 /*
- * PF2e RA Mystification — a Foundry VTT macro for disguising items
+ * PF2e RA Item Mystification — a Foundry VTT macro for disguising items
  * Copyright (C) 2026  Arkady Babaev <https://github.com/ababaev>
  *
  * This program is free software: you can redistribute it and/or modify
@@ -15,7 +15,7 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  * The full licence text is also available at
- * <https://www.gnu.org/licenses/gpl-3.0.html> and in the COPYING file
+ * <https://www.gnu.org/licenses/gpl-3.0.html> and in the LICENSE file
  * distributed with this program.
  *
  * ---------------------------------------------------------------------
@@ -30,17 +30,25 @@
  *   with each other, talismans only with talismans. A candidate must also
  *   match the target's magical status — a magical item can only be
  *   disguised as another magical item, a mundane one only as mundane.
+ *   "Magical" means any trait in MAGIC_TRAITS: the remaster "magical"
+ *   trait, or a legacy tradition trait (arcane, divine, occult, primal).
  *
  *   If an item's category is not one of the supported ones, but it counts
- *   as consumable and its name contains "potion", "oil" or "elixir", it is
- *   treated as that category. The first hint found in the name wins.
+ *   as consumable and has a supported category as a trait, it is treated
+ *   as that category (mutagens are category "mutagen" with the "elixir"
+ *   trait, so they count as elixirs). Failing that, if its name contains
+ *   "potion", "oil" or "elixir" as a whole word, it is treated as that
+ *   category. The hint that appears
+ *   earliest in the name wins ("Oil of Potency" -> oil).
  *   "Counts as consumable" means item type consumable, or one of the
  *   traits in CONSUMABLE_TRAITS — alchemical is included, which is what
  *   lets oddities such as snake oil through.
  *
  *   "by price" and "by level" rank the whole pool by closeness and show
  *   the nearest MAX candidates, so these two modes always return a full
- *   list when one exists. The percentage and level difference are printed
+ *   list when one exists. Items with no price (or a price of 0) are left
+ *   out of "by price"; the window opens in "by level" when the target
+ *   itself has no price. The percentage and level difference are printed
  *   on each row, so a poor match is visible rather than hidden. Only the
  *   combined "both" mode applies hard bands (TOLERANCE, LEVEL_SPAN),
  *   since an intersection needs thresholds to mean anything.
@@ -70,6 +78,7 @@
   ];
   const NAME_HINTS = ["potion", "oil", "elixir"];    // name-based fallback
   const CONSUMABLE_TRAITS = ["consumable", "alchemical"]; // counts as consumable
+  const MAGIC_TRAITS = ["magical", "arcane", "divine", "occult", "primal"];
   const TOLERANCE  = 0.25;  // +/-25% price band, "both" mode only
   const LEVEL_SPAN = 1;     // +/-1 level band,  "both" mode only
   const MAX        = 15;    // how many candidates to show
@@ -82,29 +91,35 @@
   // --- helpers ---
   const cp = (price) => {
     const v = price?.value;
-    if (!v) return null;                       // no price -> exclude
-    const per = price?.per ?? 1;
+    if (!v) return null;
+    const per = price?.per || 1;
     const total = (v.pp ?? 0) * 1000 + (v.gp ?? 0) * 100
                 + (v.sp ?? 0) * 10  + (v.cp ?? 0);
-    return total / per;
+    return total > 0 ? total / per : null;     // no price -> exclude
   };
 
   const traitsOf = (doc) => doc?.system?.traits?.value ?? [];
 
-  const isMagical    = (doc) => traitsOf(doc).includes("magical");
+  const isMagical    = (doc) => traitsOf(doc).some((t) => MAGIC_TRAITS.includes(t));
   const isConsumable = (doc) => doc?.type === "consumable"
     || traitsOf(doc).some((t) => CONSUMABLE_TRAITS.includes(t));
 
-  // Effective category: the declared one, or a name-based guess for
-  // consumables whose category is not one we support.
+  // Whole words only, so "Boiling" or "Soil" do not count as oil.
+  const HINT_RE = new RegExp(`\\b(${NAME_HINTS.join("|")})s?\\b`, "i");
+
+  // Effective category: the declared one, then a supported category
+  // carried as a trait (mutagens are category "mutagen" but have the
+  // "elixir" trait), then a name-based guess for consumables.
   const catOf = (doc) => {
     const raw = doc?.system?.category
              ?? doc?.system?.consumableType?.value
              ?? null;
     if (SUPPORTED.includes(raw)) return raw;
     if (!isConsumable(doc))      return raw;
-    const name = String(doc?.name ?? "").toLowerCase();
-    return NAME_HINTS.find((hint) => name.includes(hint)) ?? raw;
+    const trait = traitsOf(doc).find((t) => SUPPORTED.includes(t));
+    if (trait) return trait;
+    const hit = String(doc?.name ?? "").match(HINT_RE);
+    return hit ? hit[1].toLowerCase() : raw;
   };
 
   const groupOf = (cat) => GROUPS.find((g) => g.includes(cat)) ?? null;
@@ -118,11 +133,47 @@
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g,
     (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
+  // --- candidates, read from the compendiums once per macro run ---
+  // Everything that does not depend on the dropped item is worked out
+  // here, so each drop only filters and sorts an in-memory list.
+  const loadCandidates = async () => {
+    const all = [];
+    for (const key of PACKS) {
+      const pack = game.packs.get(key);
+      if (!pack) { ui.notifications.warn(`Compendium ${key} not found`); continue; }
+      const index = await pack.getIndex({ fields: [
+        "type", "img", "system.price", "system.category",
+        "system.consumableType", "system.level", "system.traits"
+      ]});
+      for (const e of index) {
+        if (!isConsumable(e)) continue;
+        const cat = catOf(e);
+        if (!SUPPORTED.includes(cat)) continue;
+        all.push({
+          _id: e._id,
+          pack: key,
+          name: e.name,
+          img: e.img,
+          cat,
+          magical: isMagical(e),
+          price: cp(e.system?.price),
+          level: e.system?.level?.value ?? null
+        });
+      }
+    }
+    return all;
+  };
+  const candidatesReady = loadCandidates();   // starts while the GM drags
+
   // --- the whole flow for one dropped item ---
   // Returns a short status line for the drop window, or null if nothing
   // was applied.
   const mystify = async (item) => {
-    if (!item.isOwner) {
+    if (item.documentName !== "Item") {
+      ui.notifications.error("Only items can be mystified");
+      return null;
+    }
+    if (!item.isOwner || item.compendium?.locked) {
       ui.notifications.error("You do not have permission to modify this item");
       return null;
     }
@@ -147,32 +198,10 @@
       return null;
     }
 
-    // --- gather candidates from the compendiums ---
-    const pool = [];
-    for (const key of PACKS) {
-      const pack = game.packs.get(key);
-      if (!pack) { ui.notifications.warn(`Compendium ${key} not found`); continue; }
-      const index = await pack.getIndex({ fields: [
-        "type", "img", "system.price", "system.category",
-        "system.consumableType", "system.level", "system.traits"
-      ]});
-      for (const e of index) {
-        if (!isConsumable(e))               continue;
-        if (isMagical(e) !== targetMagical) continue;
-        const cat = catOf(e);
-        if (!targetGroup.includes(cat))     continue;
-        if (e.name === item.name)           continue;
-        pool.push({
-          _id: e._id,
-          pack: key,
-          name: e.name,
-          img: e.img,
-          cat,
-          price: cp(e.system.price),
-          level: e.system?.level?.value ?? null
-        });
-      }
-    }
+    const pool = (await candidatesReady).filter((x) =>
+      x.magical === targetMagical
+      && targetGroup.includes(x.cat)
+      && x.name !== item.name);
 
     if (!pool.length) {
       ui.notifications.warn(
@@ -214,20 +243,19 @@
         .sort((a, b) => priceGap(a) - priceGap(b));
     };
 
-    const build = (mode) => {
-      const list = mode === "price" ? buildByPrice()
-                 : mode === "level" ? buildByLevel()
-                 : buildBoth();
-      return list.slice(0, MAX);
-    };
+    const lists = {};
+    const build = (mode) => lists[mode] ??= (
+        mode === "price" ? buildByPrice()
+      : mode === "level" ? buildByLevel()
+      : buildBoth()).slice(0, MAX);
 
     // --- selection window ---
     const badge = (x) => {
       const bits = [];
       if (x.cat !== targetCat) bits.push(x.cat);
       if (x.price !== null) {
-        if (targetPrice !== null && x.price === targetPrice) bits.push("exact price");
-        else if (targetPrice) {
+        if (x.price === targetPrice) bits.push("exact price");
+        else if (targetPrice !== null) {
           const d = Math.round((x.price / targetPrice - 1) * 100);
           bits.push(`${d > 0 ? "+" : ""}${d}%`);
         }
@@ -256,6 +284,10 @@
         </label>`).join("");
     };
 
+    let currentMode = targetPrice !== null ? "price" : "level";
+    const modeRadio = (value, label) => `<label><input type="radio" name="mode"
+      value="${value}" ${value === currentMode ? "checked" : ""}> ${label}</label>`;
+
     const header = `
       <p style="opacity:.75;margin:0 0 .5rem 0;">
         <b>${esc(item.name)}</b> — ${esc(fmt(targetPrice))}${
@@ -265,33 +297,27 @@
           showing ${esc(targetGroup.join("/"))}, ${pool.length} candidates</span>
       </p>
       <div style="display:flex;gap:1rem;margin-bottom:.5rem;">
-        <label><input type="radio" name="mode" value="price" checked> by price</label>
-        <label><input type="radio" name="mode" value="level"> by level</label>
-        <label><input type="radio" name="mode" value="both"> both</label>
+        ${modeRadio("price", "by price")}
+        ${modeRadio("level", "by level")}
+        ${modeRadio("both", "both")}
       </div>`;
 
-    let currentMode = "price";
-
     const picked = await new Promise((resolve) => {
-      let done = false;
       const dlg = new foundry.applications.api.DialogV2({
         window: { title: `Disguise "${item.name}" as…`, resizable: true },
         position: { width: 520 },
         content: `${header}<div id="myst-list"
-                     style="max-height:420px;overflow:auto;">${renderList("price")}</div>`,
+                     style="max-height:420px;overflow:auto;">${renderList(currentMode)}</div>`,
         buttons: [
           { action: "ok", label: "Apply", default: true,
             callback: (ev, btn) => {
               const sel = btn.form.elements.pick;
-              if (!sel) return null;
-              const idx = Number(sel.value);
-              done = true;
-              return build(currentMode)[idx] ?? null;
+              return sel ? build(currentMode)[Number(sel.value)] ?? null : null;
             }},
           { action: "cancel", label: "Cancel", callback: () => null }
         ],
         submit: (result) => resolve(result ?? null),
-        close: () => { if (!done) resolve(null); }
+        close: () => resolve(null)   // no-op if submit already resolved
       });
 
       dlg.render(true).then(() => {
@@ -319,11 +345,11 @@
       "system.identification.unidentified.name": fake.name,
       "system.identification.unidentified.img": fake.img,
       "system.identification.unidentified.data.description.value":
-        fake.system.description?.value ?? ""
+        fake.system.description?.value ?? "",
+      ...(SET_STATUS ? { "system.identification.status": "unidentified" } : {})
     });
 
     if (SET_STATUS) {
-      await item.update({ "system.identification.status": "unidentified" });
       ui.notifications.info(`${item.name} is now mystified as "${fake.name}"`);
     } else {
       ui.notifications.info(
