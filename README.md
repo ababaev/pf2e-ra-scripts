@@ -15,7 +15,7 @@ Can be done on the fly during the game.
 
 ## ra_incantation
 
-Was inspired by a player, Daniil, who used to rephrase each spell in latin language, so that his character had actually pronounced a spell (if it was not subtle) while casting it.
+Was inspired by a player, Daniil, who used to rephrase each spell in latin language, so that his character had actually pronounced a spell (if it was not subtle) while casting it. We have been playing together and his acting was stunning.
 In the opened window you can drag-and-drop a spell of your NPC, and it will suggest a phrase in english (usually a name and a casting tradition).
 The phrase in English can be modified, so that your spells can become unique.
 Then it will translate it using API of a free translator, and then apply it to the description of the spell.
