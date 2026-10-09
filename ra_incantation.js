@@ -27,8 +27,11 @@
  *   incantation, and a subtle spell gets "Silently." — these are written
  *   as they are, not translated. A subtle spell has no spoken words, so
  *   the English box is left empty and the Latin is optional. Any other
- *   spell has the English box prefilled with its traditions and its name
- *   ("Arcane occult force barrage"), ready to translate or rewrite.
+ *   spell has the English box prefilled with its name in lower case,
+ *   wrapped in the "Before the name" and "After the name" fields, e.g.
+ *   "I call upon" + "Force Barrage" + "" -> "I call upon force barrage".
+ *   Both fields keep their text between spells and are empty at first;
+ *   editing either one rebuilds the English box for the loaded spell.
  *
  * TRANSLATION
  *   There is no free official Google Translate API. This uses the
@@ -100,12 +103,13 @@
     traitsOf(doc).includes("subtle")     ? "Silently."   : null
   ].filter(Boolean).join(" ");
 
-  // English prefilled for translation: traditions, then the spell name,
-  // as one phrase. Subtle spells are cast without words, so they get nothing.
-  const englishOf = (doc) => {
+  // English prefilled for translation: the user's "before" text, the
+  // spell name in lower case, then the "after" text, as one phrase.
+  // Subtle spells are cast without words, so they get nothing.
+  const englishOf = (doc, before, after) => {
     if (doc?.type !== "spell" || traitsOf(doc).includes("subtle")) return "";
-    const trads = doc.system?.traits?.traditions ?? [];
-    return cap([...trads, doc.name].join(" ").toLowerCase());
+    return cap([before.trim(), doc.name.toLowerCase(), after.trim()]
+      .filter(Boolean).join(" "));
   };
 
   // --- state ---
@@ -123,6 +127,14 @@
       </div>
       <p id="in-target" style="text-align:center;margin:.4rem 0;
          opacity:.6;font-size:.9em;">nothing loaded</p>
+
+      <div style="display:flex;gap:.5rem;margin-bottom:.4rem;">
+        <label style="flex:1 1 0;font-size:.9em;opacity:.8;">Before the name
+          <input type="text" id="in-before" style="width:100%;"
+                 placeholder="I call upon"></label>
+        <label style="flex:1 1 0;font-size:.9em;opacity:.8;">After the name
+          <input type="text" id="in-after" style="width:100%;"></label>
+      </div>
 
       <label style="font-size:.9em;opacity:.8;">English</label>
       <textarea id="in-src" rows="3" style="width:100%;resize:vertical;"
@@ -150,6 +162,8 @@
   const label    = root.querySelector("#in-target");
   const srcBox   = root.querySelector("#in-src");
   const outBox   = root.querySelector("#in-out");
+  const beforeIn = root.querySelector("#in-before");
+  const afterIn  = root.querySelector("#in-after");
   const btnTrans = root.querySelector("#in-translate");
   const btnApply = root.querySelector("#in-apply");
 
@@ -164,6 +178,16 @@
   };
 
   outBox.addEventListener("input", refreshApply);
+
+  const prefill = () => {
+    srcBox.value = target ? englishOf(target, beforeIn.value, afterIn.value) : "";
+  };
+  beforeIn.addEventListener("input", prefill);
+  afterIn.addEventListener("input", prefill);
+
+  // Enter in a one-line field would submit the dialog form and close it.
+  for (const el of [beforeIn, afterIn])
+    el.addEventListener("keydown", (ev) => { if (ev.key === "Enter") ev.preventDefault(); });
 
   // --- dropping ---
   zone.addEventListener("dragover", (ev) => {
@@ -193,7 +217,7 @@
 
     target = doc;
     prefix = prefixOf(doc);
-    srcBox.value = englishOf(doc);
+    prefill();
     outBox.value = "";
     showTarget();
     refreshApply();
